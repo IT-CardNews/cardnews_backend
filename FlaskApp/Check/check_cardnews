@@ -1,0 +1,81 @@
+from flask import Flask, jsonify, request
+import mysql.connector
+import os
+from dotenv import load_dotenv
+
+app = Flask(__name__)
+
+# .env 파일에서 환경 변수 로드
+load_dotenv()
+
+# 환경 변수에서 데이터베이스 정보 가져오기
+db_host = os.getenv("192.168.35.189")
+db_port = os.getenv("3307")
+db_user = os.getenv("eatit")
+db_pass = os.getenv("EatitDB717!")
+db_name = os.getenv("db_eatit")
+
+db_config = {
+    'host': "192.168.35.189",
+    'port': int("3307"),
+    'user': "eatit",
+    'password': "EatitDB717!",
+    'database': "db_eatit"
+}
+
+
+import mysql.connector
+
+def get_card_news():
+    # MySQL 서버 연결 정보
+    db_config = {
+        'host': '192.168.35.189',
+        'user': 'eatit',
+        'password': 'EatitDB717!',
+        'database': 'db_eatit'
+    }
+
+    try:
+        # MySQL 서버에 연결
+        connection = mysql.connector.connect(**db_config)
+
+        if connection.is_connected():
+            print('MySQL 서버에 연결되었습니다.')
+
+            # 쿼리 실행을 위한 커서 생성
+            cursor = connection.cursor()
+
+            # 카드뉴스 조회 쿼리 작성
+            query = "SELECT title, content, image_url FROM card_news_table;"
+
+            # 쿼리 실행
+            cursor.execute(query)
+
+            # 결과 가져오기
+            card_news_list = []
+            for (title, content, image_url) in cursor:
+                card_news_list.append({
+                    'title': title,
+                    'content': content,
+                    'image_url': image_url
+                })
+
+            # 커서와 연결 종료
+            cursor.close()
+
+            return card_news_list
+
+    except mysql.connector.Error as e:
+        print('MySQL 에러 발생:', e)
+
+    finally:
+        # 연결 종료
+        if connection.is_connected():
+            connection.close()
+            print('MySQL 서버 연결이 닫혔습니다.')
+
+    return []
+
+if __name__ == "__main__":
+    card_news = get_card_news()
+    print(card_news)
