@@ -801,7 +801,7 @@ class UpdateUserInfo(Resource):
     @api.expect(user_model)
     @jwt_required()
     def post(self):
-        """사용자 정보 수정"""
+        """사용자 정보 수정, jwt 반환 필요"""
         try:
             user_id = get_jwt_identity()
             userinfo = UserModel().get_user(user_id)
@@ -824,9 +824,6 @@ class UpdateUserInfo(Resource):
                 return {"error": "사용자를 찾을 수 없습니다."}, 404
         except Exception as e:
             return {"error": str(e)}, 500
-
-
-
 
 if __name__ == '__main__':
     app.run(debug=False)
