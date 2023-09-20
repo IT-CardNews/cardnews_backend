@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, render_template, redirect, request, make_response
 import mysql.connector
 import os
+import json
 from werkzeug.utils import secure_filename
 from flask_sqlalchemy import SQLAlchemy
 from dotenv import load_dotenv
@@ -17,9 +18,15 @@ from model import UserModel, UserData
 import pymysql
 pymysql.install_as_MySQLdb()
 from flask_restx import Api, Resource, fields, reqparse
-from datetime import datetime
+from datetime import datetime, date
+
+def json_serial(obj):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError("Type %s not serializable" % type(obj))
 
 app = Flask(__name__)
+
 app.config['JWT_SECRET_KEY'] = "I'M IML."
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']
 app.config['JWT_COOKIE_SECURE'] = False
@@ -203,20 +210,26 @@ class BoardList(Resource):
         """게시글 목록 조회"""
         try:
             # 데이터베이스에서 게시글 정보 가져오기
-            boards_data = db.session.query(board_model).all()
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM Board;"
+            cursor.execute(query)
+            boards_data = cursor.fetchall()
+            cursor.close()
 
             # 게시글 정보를 JSON 형식으로 반환
             boards_list = []
-            for board in boards_data:
-                board_data = {
-                    "boardId": board.boardId,
-                    "boardWriter": board.boardWriter,
-                    "boardTitle": board.boardTitle,
-                    "boardDaytime": board.boardDaytime.isoformat() if board.boardDaytime else None  # ISO 형식으로 변환
+            for board_data in boards_data:
+                board = {
+                    "boardId": board_data[0],
+                    "boardWriterId": board_data[1],  # 작성자 ID 추가
+                    "boardWriter": board_data[2],
+                    "boardTitle": board_data[3],
+                    "boardContent": board_data[4],  # 게시글 내용 추가
+                    "boardDaytime": board_data[5].isoformat() if board_data[5] else None  # ISO 형식으로 변환
                 }
-                boards_list.append(board_data)
+                boards_list.append(board)
 
-            return jsonify(boards_list)
+            return boards_list
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -233,7 +246,10 @@ class BoardCreate(Resource):
 
         try:
             # 현재 게시글의 최대 boardId를 가져옴
-            max_board_id = db.session.query(func.max(board_model.boardId)).scalar()
+            cursor = db_connection.cursor()
+            max_board_id_query = "SELECT MAX(boardId) FROM Board;"
+            cursor.execute(max_board_id_query)
+            max_board_id = cursor.fetchone()[0]
 
             # 최대 boardId가 None이면 데이터베이스가 비어있는 상태로 간주하고 0으로 설정
             if max_board_id is None:
@@ -251,21 +267,14 @@ class BoardCreate(Resource):
             boardDaytime = datetime.now()  # 현재 시간을 사용하여 작성 일자 생성
 
             # 게시글을 DB에 저장
-            new_board = board_model(
-                boardId=new_board_id,  # 자동으로 생성된 boardId 사용
-                boardWriterId=boardWriterId,
-                boardWriter=boardWriter,
-                boardTitle=boardTitle,
-                boardContent=boardContent,
-                boardDaytime=boardDaytime  # 작성 일자 추가
-            )
-            db.session.add(new_board)
-            db.session.commit()
+            insert_query = "INSERT INTO Board (boardId, boardWriterId, boardWriter, boardTitle, boardContent, boardDaytime) VALUES (%s, %s, %s, %s, %s, %s);"
+            cursor.execute(insert_query, (new_board_id, boardWriterId, boardWriter, boardTitle, boardContent, boardDaytime))
+            db_connection.commit()
 
             return jsonify({"message": "게시글이 작성되었습니다."}), 201  # Created
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-
+        
 @api.route("/board/<int:board_id>")
 class Board(Resource):
     @api.doc('게시글 상세 조회')
@@ -274,23 +283,31 @@ class Board(Resource):
         """게시글 상세 조회"""
         try:
             # 데이터베이스에서 해당 게시글 가져오기
-            board = db.session.query(board_model).filter_by(boardId=board_id).first()
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM Board WHERE boardId = %s;"
+            cursor.execute(query, (board_id,))
+            board_data = cursor.fetchone()
+            cursor.close()
 
-            if board is None:
+            if board_data is None:
                 return jsonify({"error": "게시글을 찾을 수 없습니다."}), 404
 
             # 게시글 정보를 JSON 형식으로 반환
             board_info = {
-                "boardId": board.boardId,
-                "boardWriter": board.boardWriter,
-                "boardTitle": board.boardTitle,
-                "boardContent": board.boardContent,  # 게시글 내용 추가
-                "boardDaytime": board.boardDaytime.isoformat() if board.boardDaytime else None  # ISO 형식으로 변환
+                "boardId": board_data[0],
+                "boardWriterId": board_data[1],
+                "boardWriter": board_data[2],
+                "boardTitle": board_data[3],
+                "boardContent": board_data[4],
+                "boardDaytime": board_data[5].isoformat() if board_data[5] else None
             }
+            print(board_info)
 
             return jsonify(board_info)
+        except mysql.connector.Error as err:
+            return jsonify({"error": f"Database Error: {str(err)}"}), 500
         except Exception as e:
-            return jsonify({"error": str(e)}), 500  # Internal Server Error
+            return jsonify({"error": str(e)}), 500
 
 @api.route("/board/<int:board_id>/update")
 class BoardUpdate(Resource):
@@ -305,19 +322,44 @@ class BoardUpdate(Resource):
 
         try:
             # 데이터베이스에서 해당 게시글 가져오기
-            board = db.session.query(board_model).filter_by(boardId=board_id).first()
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM Board WHERE boardId = %s;"
+            cursor.execute(query, (board_id,))
+            board_data = cursor.fetchone()
 
-            if board is None:
+            if board_data is None:
+                cursor.close()
                 return jsonify({"error": "게시글을 찾을 수 없습니다."}), 404
 
             # boardTitle과 boardContent만 업데이트
-            board.boardTitle = boardTitle
-            board.boardContent = boardContent
+            query = "UPDATE Board SET boardTitle = %s, boardContent = %s WHERE boardId = %s;"
+            cursor.execute(query, (boardTitle, boardContent, board_id))
+            db_connection.commit()
+            
+            # 수정된 데이터 다시 가져오기
+            cursor.execute("SELECT * FROM Board WHERE boardId = %s;", (board_id,))
+            updated_board_data = cursor.fetchone()
+            cursor.close()
 
-            db.session.commit()
+            # JSON으로 변환하여 반환
+            try:
+                board_json = {
+                    "boardId": updated_board_data[0],
+                    "boardWriter": updated_board_data[2],
+                    "boardTitle": updated_board_data[3],
+                    "boardContent": updated_board_data[4],
+                    "boardDaytime": json_serial(updated_board_data[5]) if updated_board_data[5] else None
+                }
+                return json.dumps(board_json), 200  # OK
+            except Exception as json_error:
+                print("Error while converting to JSON:", json_error)
+                return jsonify({
+                    "error": "Error while converting to JSON",
+                    "message": str(json_error)
+                }), 500
 
-            return jsonify({"message": "게시글이 수정되었습니다."}), 200  # OK
         except Exception as e:
+            print("Error:", e)
             return jsonify({"error": str(e)}), 500  # Internal Server Error
 
 @api.route("/board/<int:board_id>/delete")
@@ -327,22 +369,28 @@ class BoardDelete(Resource):
         """게시글 삭제"""
         try:
             # 데이터베이스에서 해당 게시글 가져오기
-            board = db.session.query(board_model).filter_by(boardId=board_id).first()
-
-            if board is None:
-                return jsonify({"error": "게시글을 찾을 수 없습니다."}), 404
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM Board WHERE boardId = %s;"
+            cursor.execute(query, (board_id,))
+            board_data = cursor.fetchone()
+            
+            if board_data is None:
+                cursor.close()
+                return json.dumps({"error": "게시글을 찾을 수 없습니다."}), 404
 
             # 게시글 삭제
-            db.session.delete(board)
-
+            delete_query = "DELETE FROM Board WHERE boardId = %s;"
+            cursor.execute(delete_query, (board_id,))
+            db_connection.commit()
+            
             # 삭제된 게시글 이후의 boardId를 하나씩 당김
-            boards_to_update = db.session.query(board_model).filter(board_model.boardId > board_id).all()
-            for b in boards_to_update:
-                b.boardId -= 1
+            update_query = "UPDATE Board SET boardId = boardId - 1 WHERE boardId > %s;"
+            cursor.execute(update_query, (board_id,))
+            db_connection.commit()
+            cursor.close()
 
-            db.session.commit()
+            return json.dumps({"message": "게시글이 삭제되었습니다."}), 200  # OK
 
-            return jsonify({"message": "게시글이 삭제되었습니다."}), 200  # OK
         except Exception as e:
             return jsonify({"error": str(e)}), 500  # Internal Server Error
 
@@ -354,33 +402,42 @@ class CommentCreate(Resource):
         """댓글 작성"""
         # 댓글 작성에 필요한 파라미터 파싱
         args = comment_parser.parse_args()
-        commentBoardId = board_id  # 게시글 ID는 URL에서 가져옴
         commentWriterId = args['commentWriterId']  # 작성자 ID 추가
         commentContent = args['commentContent']
         commentDaytime = datetime.now()  # 현재 시간을 사용하여 작성 일자 생성
 
-        # 작성자 정보 가져오기 (user_model을 사용)
-        user = db.session.query(user_model).get(commentWriterId)
-        if user is None:
-            return jsonify({"error": "댓글 작성자를 찾을 수 없습니다."}), 404
-
-        commentWriter = user.nickname  # 작성자의 nickname 사용
-
         try:
-            # 댓글을 DB에 저장
-            new_comment = comment_model(
-                commentBoardId=commentBoardId,
-                commentWriterId=commentWriterId,  # 작성자 ID 추가
-                commentWriter=commentWriter,
-                commentContent=commentContent,
-                commentDaytime=commentDaytime  # 작성 일자 추가
-            )
-            db.session.add(new_comment)
-            db.session.commit()
+            # 데이터베이스에서 해당 게시글 가져오기
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM Board WHERE boardId = %s;"
+            cursor.execute(query, (board_id,))
+            board_data = cursor.fetchone()
 
-            return jsonify({"message": "댓글이 작성되었습니다."}), 201  # Created
+            if board_data is None:
+                cursor.close()
+                return json.dumps({"error": "게시글을 찾을 수 없습니다."}), 404
+
+            # 작성자 정보 가져오기 (사용자 ID로 사용자의 닉네임을 가져옴)
+            user_query = "SELECT nickname FROM users WHERE id = %s;"
+            cursor.execute(user_query, (commentWriterId,))
+            user_data = cursor.fetchone()
+
+            if user_data is None:
+                cursor.close()
+                return json.dumps({"error": "댓글 작성자를 찾을 수 없습니다."}), 404
+
+            # 사용자의 닉네임을 commentWriter 변수에 할당
+            commentWriter = user_data[0]
+
+            # 댓글을 DB에 저장
+            insert_query = "INSERT INTO Comments (commentBoardId, commentWriterId, commentWriter, commentContent, commentDaytime) VALUES (%s, %s, %s, %s, %s);"
+            cursor.execute(insert_query, (board_id, commentWriterId, commentWriter, commentContent, commentDaytime))
+            db_connection.commit()
+            cursor.close()
+
+            return json.dumps({"message": "댓글이 작성되었습니다."}), 201  # Created
         except Exception as e:
-            return jsonify({"error": str(e)}), 500  # Internal Server Error
+            return json.dumps({"error": str(e)}), 500  # Internal Server Error
 
 @api.route("/board/<int:board_id>/comment/<int:comment_id>")
 class CommentDelete(Resource):
@@ -388,18 +445,32 @@ class CommentDelete(Resource):
     def delete(self, board_id, comment_id):
         """댓글 삭제"""
         try:
+            # Database Connection
+            db_connection = pymysql.connect(**db_config)
+            cursor = db_connection.cursor()
+
             # 데이터베이스에서 해당 댓글 가져오기
-            comment = db.session.query(comment_model).filter_by(commentBoardId=board_id, commentId=comment_id).first()
-            if comment is None:
-                return jsonify({"error": "댓글을 찾을 수 없습니다."}), 404
+            query = "SELECT * FROM Comment WHERE commentBoardId = %s AND commentId = %s;"
+            cursor.execute(query, (board_id, comment_id))
+            comment_data = cursor.fetchone()
+
+            if comment_data is None:
+                cursor.close()
+                db_connection.close()
+                return json.dumps({"error": "댓글을 찾을 수 없습니다."}), 404
 
             # 댓글 삭제
-            db.session.delete(comment)
-            db.session.commit()
+            delete_query = "DELETE FROM Comment WHERE commentId = %s;"
+            cursor.execute(delete_query, (comment_id,))
+            db_connection.commit()
 
-            return jsonify({"message": "댓글이 삭제되었습니다."}), 200  # OK
+            cursor.close()
+            db_connection.close()
+
+            return json.dumps({"message": "댓글이 삭제되었습니다."}), 200  # OK
+
         except Exception as e:
-            return jsonify({"error": str(e)}), 500  # Internal Server Error
+            return json.dumps({"error": str(e)}), 500  # Internal Server Error
 
 @api.route('/job_upload')
 class JobCreate(Resource):
@@ -473,6 +544,44 @@ class JobList(Resource):
         except Exception as e:
             return jsonify({"error": str(e)}), 500
         
+@api.route("/job_search")
+class JobSearch(Resource):
+    @api.doc('취업 정보 검색')
+    @api.expect(reqparse.RequestParser().add_argument('keyword', type=str, required=True, help='키워드로 채용 정보 검색'))
+    @api.marshal_list_with(job_model)
+    def get(self):
+        """취업 정보 검색"""
+        try:
+            # 키워드 검색어 가져오기
+            args = api.payload
+            keyword = args.get('keyword', '')
+
+            # 데이터베이스에서 채용 정보 검색
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM Job WHERE jobTitle LIKE '%{keyword}%';"
+            cursor.execute(query)
+            jobs_data = cursor.fetchall()
+            cursor.close()
+
+            # 이미지 URL을 포함한 채용 정보를 JSON 형식으로 반환
+            jobs_with_image_urls = []
+            for Job in jobs_data:
+                job_data = {
+                    "id": Job[0],
+                    "jobAdd": Job[1],
+                    "jobImage": f"https://eatit-backend.azurewebsites.net/{Job[2]}",  # 이미지 URL 포함
+                    "jobDate": Job[3],
+                    "jobField": Job[4],
+                    "requirements": Job[5]
+                }
+                jobs_with_image_urls.append(job_data)
+
+            return jsonify(jobs_with_image_urls)
+        except mysql.connector.Error as err:
+            return jsonify({"error": f"Database Error: {str(err)}"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        
 @api.route('/news_upload', methods=['POST'])
 class NewsCreate(Resource):
     @api.doc('뉴스 추가')
@@ -537,6 +646,43 @@ class CardnewsList(Resource):
                 Cardnews_with_image_urls.append(Cardnews_info)
         
             return Cardnews_with_image_urls
+        except mysql.connector.Error as err:
+            return jsonify({"error": f"Database Error: {str(err)}"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        
+@api.route("/cardnews_search")
+class CardnewsSearch(Resource):
+    @api.doc('카드뉴스 검색')
+    @api.expect(reqparse.RequestParser().add_argument('keyword', type=str, required=True, help='키워드로 카드뉴스 검색'))
+    @api.marshal_list_with(cardnews_model)
+    def get(self):
+        """카드뉴스 검색"""
+        try:
+            # 키워드 검색어 가져오기
+            args = api.payload
+            keyword = args.get('keyword', '')
+
+            # 데이터베이스에서 카드뉴스 정보 검색
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM Cardnews WHERE cardnewsTitle LIKE '%{keyword}%';"
+            cursor.execute(query)
+            cardnews_data = cursor.fetchall()
+            cursor.close()
+
+            # 이미지 URL을 포함한 카드뉴스 정보를 JSON 형식으로 반환
+            cardnews_with_image_urls = []
+            for cardnews in cardnews_data:
+                cardnews_info = {
+                    "id": cardnews[0],
+                    "CardnewsTitle": cardnews[1],
+                    "CardnewsImage": f"https://eatit-backend.azurewebsites.net/{cardnews[2]}",  # 이미지 URL 포함
+                    "CardnewsContent": cardnews[3],
+                    "CardnewsPublished": cardnews[4],
+                }
+                cardnews_with_image_urls.append(cardnews_info)
+
+            return jsonify(cardnews_with_image_urls)
         except mysql.connector.Error as err:
             return jsonify({"error": f"Database Error: {str(err)}"}), 500
         except Exception as e:
