@@ -51,7 +51,8 @@ class UserModel:
             cursor.close()
             if user_data:
                 return UserData.deserialize(user_data)
-            return None
+            else:
+                return UserData()
         except mysql.connector.Error as err:
             print("Error executing query:", err)
 

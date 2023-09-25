@@ -257,13 +257,16 @@ class BoardCreate(Resource):
             else:
                 new_board_id = max_board_id + 1  # 현재 최대값에 1을 더한 값을 사용
 
-            # 게시글 작성자의 정보 가져오기 (user_model을 사용)
-            user = db.session.query(user_model).get(args['boardWriterId'])
-            if user is None:
-                return jsonify({"error": "User not found"}), 404
+            # 게시글 작성자의 정보 가져오기 (SQL을 사용)
+            boardWriterId = args['boardWriterId']
+            user_query = "SELECT nickname FROM users WHERE id = %s;"
+            cursor.execute(user_query, (boardWriterId,))
+            user_data = cursor.fetchone()
 
-            boardWriter = user.nickname  # 작성자의 nickname 사용
-            boardWriterId = user.id
+            if user_data is None:
+                return json.dumps({"error": "User not found"}), 404
+
+            boardWriter = user_data[0]  # 작성자의 nickname 사용
             boardDaytime = datetime.now()  # 현재 시간을 사용하여 작성 일자 생성
 
             # 게시글을 DB에 저장
@@ -271,9 +274,9 @@ class BoardCreate(Resource):
             cursor.execute(insert_query, (new_board_id, boardWriterId, boardWriter, boardTitle, boardContent, boardDaytime))
             db_connection.commit()
 
-            return jsonify({"message": "게시글이 작성되었습니다."}), 201  # Created
+            return json.dumps({"message": "게시글이 작성되었습니다."}), 201  # Created
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return json.dumps({"error": str(e)}), 500
         
 @api.route("/board/<int:board_id>")
 class Board(Resource):
@@ -553,15 +556,16 @@ class JobSearch(Resource):
         """취업 정보 검색"""
         try:
             # 키워드 검색어 가져오기
-            args = api.payload
+            args = request.args
             keyword = args.get('keyword', '')
 
             # 데이터베이스에서 채용 정보 검색
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM Job WHERE jobTitle LIKE '%{keyword}%';"
-            cursor.execute(query)
+            query = "SELECT * FROM Job WHERE jobAdd LIKE %s OR jobField LIKE %s OR requirements LIKE %s;"
+            cursor.execute(query, (f'%{keyword}%', f'%{keyword}%', f'%{keyword}%'))
             jobs_data = cursor.fetchall()
             cursor.close()
+            print(f"Jobs Data: {jobs_data}")
 
             # 이미지 URL을 포함한 채용 정보를 JSON 형식으로 반환
             jobs_with_image_urls = []
@@ -578,8 +582,10 @@ class JobSearch(Resource):
 
             return jsonify(jobs_with_image_urls)
         except mysql.connector.Error as err:
+            print(f"Database Error: {str(err)}")
             return jsonify({"error": f"Database Error: {str(err)}"}), 500
         except Exception as e:
+            print(f"Exception: {str(e)}")
             return jsonify({"error": str(e)}), 500
         
 @api.route('/news_upload', methods=['POST'])
@@ -645,10 +651,12 @@ class CardnewsList(Resource):
                 }
                 Cardnews_with_image_urls.append(Cardnews_info)
         
-            return Cardnews_with_image_urls
+            return jsonify(Cardnews_with_image_urls)
         except mysql.connector.Error as err:
+            print(f"Database Error: {str(err)}")
             return jsonify({"error": f"Database Error: {str(err)}"}), 500
         except Exception as e:
+            print(f"Exception: {str(e)}")
             return jsonify({"error": str(e)}), 500
         
 @api.route("/cardnews_search")
@@ -660,16 +668,17 @@ class CardnewsSearch(Resource):
         """카드뉴스 검색"""
         try:
             # 키워드 검색어 가져오기
-            args = api.payload
+            args = request.args
             keyword = args.get('keyword', '')
 
             # 데이터베이스에서 카드뉴스 정보 검색
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM Cardnews WHERE cardnewsTitle LIKE '%{keyword}%';"
-            cursor.execute(query)
+            query = "SELECT * FROM Cardnews WHERE CardnewsTitle LIKE %s OR CardnewsContent LIKE %s;"
+            cursor.execute(query, (f'%{keyword}%', f'%{keyword}%'))
+
             cardnews_data = cursor.fetchall()
             cursor.close()
-
+            print(f"cardnews Data: {cardnews_data}")
             # 이미지 URL을 포함한 카드뉴스 정보를 JSON 형식으로 반환
             cardnews_with_image_urls = []
             for cardnews in cardnews_data:
@@ -681,11 +690,12 @@ class CardnewsSearch(Resource):
                     "CardnewsPublished": cardnews[4],
                 }
                 cardnews_with_image_urls.append(cardnews_info)
-
             return jsonify(cardnews_with_image_urls)
         except mysql.connector.Error as err:
+            print(f"Database Error: {str(err)}")
             return jsonify({"error": f"Database Error: {str(err)}"}), 500
         except Exception as e:
+            print(f"Exception: {str(e)}")
             return jsonify({"error": str(e)}), 500
 
 @app.route("/oauth")
@@ -703,17 +713,16 @@ def oauth_api():
     """
     try:
         code = str(request.args.get('code'))
-    
+        print(f"Received code: {code}")
         oauth = Oauth()
         auth_info = oauth.auth(code)
         user = oauth.userinfo("Bearer " + auth_info['access_token'])
-    
+        
         user = UserData(user)
         UserModel().upsert_user(user)
-
         access_token = create_access_token(identity=user.id)
         refresh_token = create_refresh_token(identity=user.id)
-    
+        print(f"access_token: {access_token}")
         resp = redirect("/userinfo") 
 
         set_access_cookies(resp, access_token)
@@ -755,9 +764,9 @@ def userinfo():
     Access Token을 이용한 DB에 저장된 사용자 정보 가져오기
     """
     user_id = get_jwt_identity()
+    print(f"user_id: {user_id}")
     userinfo = UserModel().get_user(user_id).serialize()
     return jsonify(userinfo)
-
 
 @app.route('/oauth/url')
 def oauth_url_api():
@@ -826,4 +835,4 @@ class UpdateUserInfo(Resource):
             return {"error": str(e)}, 500
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=True)
